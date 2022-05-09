@@ -1,0 +1,385 @@
+<?php
+class FeedProm_Get_Products
+{
+    private $feedback;
+    public $feed_config;
+    private $products = array();
+    public $project_config;
+    private $upload_dir;
+    private $base;
+    private $path;
+    private $file;
+
+    public function __construct()
+    {
+        $this->get_products = array();
+    }
+
+    /**
+     * Function to add CDATA brackets to title, short_description and description attributes
+     */
+    protected function feedprom_append_cdata($string)
+    {
+        if (!empty($string)) {
+            return "<![CDATA[$string]]>";
+        }
+    }
+
+    /**
+     * An advanced strip_tags function
+     */
+    public function rip_tags($string)
+    {
+        // ----- remove HTML TAGs -----
+        $string = preg_replace('/<[^>]*>/', ' ', $string);
+
+        // ----- remove control characters -----
+        $string = str_replace("\r", '', $string); // --- replace with empty space
+        $string = str_replace("\n", ' ', $string); // --- replace with space
+        $string = str_replace("\t", ' ', $string); // --- replace with space
+
+        // ----- remove multiple spaces -----
+        $string = trim(preg_replace('/ {2,}/', ' ', $string));
+
+        return $string;
+    }
+
+    /**
+     * Strip unwanted UTF chars from string
+     */
+    public function feedprom_utf8_for_xml($string)
+    {
+        $string = html_entity_decode($string);
+        return preg_replace('/[^\x{0009}\x{000a}\x{000d}\x{0020}-\x{D7FF}\x{E000}-\x{FFFD}]+/u', ' ', $string);
+    }
+
+    /**
+     * Converts an ordinary xml string into a CDATA string
+     */
+    public function feedprom_convert_to_cdata($string)
+    {
+        return "<![CDATA[ $string ]]>";
+    }
+    /**
+     * Create a floatval for prices
+     */
+    public function feedprom_floatvalue($val)
+    {
+        $val = str_replace(",", ".", $val);
+        $val = preg_replace('/\.(?=.*\.)/', '', $val);
+        return floatval($val);
+    }
+
+    /**
+     * Get all configured shipping zones
+     */
+    public function feedprom_get_shipping_zones()
+    {
+        if (class_exists('WC_Shipping_Zones')) {
+            $all_zones = WC_Shipping_Zones::get_zones();
+            return $all_zones;
+        }
+        return false;
+    }
+
+    /**
+     * Get installment for product
+     */
+    public function feedprom_get_installment($project_config, $productId)
+    {
+        $installment = "";
+        $currency = get_woocommerce_currency();
+        if (isset($project_config['WCML'])) {
+            $currency = $project_config['WCML'];
+        }
+        $installment_months = get_post_meta($productId, '_feedprom_installment_months', true);
+        $installment_amount = get_post_meta($productId, '_feedprom_installment_amount', true);
+
+        if (!empty($installment_amount)) {
+            $installment = $installment_months . ":" . $installment_amount . " " . $currency;
+        }
+        return $installment;
+    }
+
+    /**
+     * Creates XML root and header for productfeed
+     */
+    public function feedprom_create_xml_feed($products, $feed_config, $header)
+    {
+        $upload_dir = wp_upload_dir();
+        $filename = 'auto';
+
+        // External location for downloading the file
+        $external_base = $upload_dir['baseurl'];
+        $external_path = $external_base . "/rch-feed-prom-ua/";
+        $external_file = $external_path . "/" . sanitize_file_name($filename) . ".xml";
+
+        $base = $upload_dir['basedir'];
+        $path = $base . "/rch-feed-prom-ua";
+        $file = $path . "/" . sanitize_file_name($filename) . ".xml";
+
+        if (!file_exists($path)) {
+            wp_mkdir_p($path);
+        }
+        if ((file_exists($file)) and ($header == "true")) {
+            unlink($file);
+        }
+        $ff = file_exists($file);
+        $main_currency = get_woocommerce_currency();
+        $xml = new SimpleXMLElement('<?xml version="1.0" encoding="utf-8"?><!DOCTYPE yml_catalog SYSTEM "shops.dtd"><yml_catalog></yml_catalog>');
+        $xml->addAttribute('date', date('Y-m-d H:i'));
+        $shop = $xml->addChild('shop');
+        $shop->addChild('company', 'Bexhill Trading Auto');
+        $shop->addChild('url', 'https://bexhilltrading.net/');
+
+        $currencies = $shop->addChild('currencies');
+        $currency = $currencies->addChild('currency');
+        $currency->addAttribute('id', $main_currency);
+        $currency->addAttribute('rate', '1');
+
+        $args = array(
+            'taxonomy' => "product_cat",
+        );
+        $product_categories = get_terms('product_cat', $args);
+
+        $count = count($product_categories);
+        if ($count > 0) {
+            $categories = $shop->addChild('categories');
+
+            foreach ($product_categories as $product_category) {
+                $category = $categories->addChild('category', htmlspecialchars($product_category->name));
+                $category->addAttribute('id', $product_category->term_id);
+                if ($product_category->parent > 0) {
+                    $category->addAttribute('parentId', $product_category->parent);
+
+                }
+            }
+        }
+
+        $aantal = count($products);
+        if ($aantal > 0) {
+            $shop = $xml->shop->addChild('offers');
+            foreach ($products as $key => $value) {
+                $product = $xml->shop->offers->addChild('offer');
+                $product->addAttribute('id', $value['id']);
+                $product->addAttribute('available', $value['available']);
+                $product->addAttribute('selling_type', 'u');
+                $product->addChild('price', $value['price']);
+                $product->addChild('currencyId', $value['currency']);
+                $product->addChild('name', $value['title']);
+                $product->addChild('url', $value['url']);
+                $product->addChild('categoryId', $value['category']);
+                $product->addChild('portal_category_id', '1201');
+                $product->addChild('description', $value['description']);
+                if (isset($value['vendor'])) {
+                    $product->addChild('vendor', $value['vendor']);
+                }
+                foreach ($value['image_all'] as $item) {
+                    $product->addChild('picture', $item);
+                }
+                foreach ($value['param'] as $key => $item) {
+                    $param = $product->addChild('param', $item);
+                    $param->addAttribute('name', $key);
+                }
+            }
+        }
+        $xml->asXML($file);
+        unset($xml);
+    }
+
+    /**
+     * Get products
+     */
+    public function feedprom_get_products($project_config = [])
+    {
+        $nr_products_processed = 0;
+
+        $count_single = wp_count_posts('product');
+        $published_products = $count_single->publish;
+
+        $count_single = wp_count_posts('product');
+
+        $taxonomy = 'product_cat';
+        $orderby = 'name';
+        $show_count = 0; // 1 for yes, 0 for no
+        $pad_counts = 0; // 1 for yes, 0 for no
+        $hierarchical = 1; // 1 for yes, 0 for no
+        $title = '';
+        $empty = 0;
+
+        $args = array(
+            'taxonomy' => $taxonomy,
+            'orderby' => $orderby,
+            'show_count' => $show_count,
+            'pad_counts' => $pad_counts,
+            'hierarchical' => $hierarchical,
+            'title_li' => $title,
+            'hide_empty' => $empty,
+        );
+        $all_categories = get_categories($args);
+        $cat_array = [];
+        foreach ($all_categories as $item) {
+            $el = "feedpromcat_" . $item->term_id;
+            $op = get_option($el);
+            if ($op == 'on') {
+                $cat_array[] = $item->term_id;
+            }
+
+        }
+        $my_stocks = [['В наличии', 'instock'], ['Под заказ', 'outofstock'], ['Продано', 'stocksold']];
+        $stock_array = [];
+        foreach ($my_stocks as $item) {
+            $el = "feedpromstock_" . $item[1];
+            $op = get_option($el);
+            if ($op == 'on') {
+                $stock_array[] = $item[1];
+            }
+
+        }
+
+        $offset_step_size = ceil($published_products);
+
+        $products = array();
+        $post_type = array('product');
+
+        $wp_query = array(
+            'posts_per_page' => $offset_step_size,
+            'offset' => $nr_products_processed,
+            'post_type' => $post_type,
+            'post_status' => 'publish',
+            'fields' => 'ids',
+            'no_found_rows' => true,
+        );
+        $prods = new WP_Query($wp_query);
+        while ($prods->have_posts()): $prods->the_post();
+            global $product;
+            $xml_product = array();
+
+            $this->childID = get_the_ID();
+            $this->parentID = wp_get_post_parent_id($this->childID);
+            $post = get_post($this->parentID);
+
+            $status = get_post_status($this->parentID);
+
+            if ($status != "publish") {continue;}
+
+            $xml_product['id'] = get_the_ID();
+            $product_categories = get_the_terms($xml_product['id'], "product_cat");
+            if (!$product_categories) {
+                continue;
+            }
+            $xml_product['category'] = $product_categories[0]->term_id;
+            $ready_category = in_array($product_categories[0]->term_id, $cat_array) ? true : false;
+            $xml_product['title'] = $product->get_title();
+            $xml_product['title'] = $this->feedprom_utf8_for_xml($xml_product['title']);
+            $xml_product['sku'] = $product->get_sku();
+            $xml_product['publication_date'] = get_the_date('d-m-y G:i:s');
+            $xml_product['url'] = $product->get_permalink();
+            $xml_product['price'] = wc_get_price_including_tax($product, array('price' => $product->get_price()));
+            $xml_product['price'] = wc_format_decimal($xml_product['price'], 2);
+            $xml_product['currency'] = get_woocommerce_currency();
+
+            $xml_product['description'] = html_entity_decode((str_replace("\r", "", $post->post_content)), ENT_QUOTES | ENT_XML1, 'UTF-8');
+            $c = explode('[:', $xml_product['description']);
+            if (isset($c[1])) {
+                $c[1] = str_replace('ua][form_fastorder class="" title="" text=""]', '', str_replace('ru][form_fastorder class="" title="" text=""]', '', $c[1]));
+                $c[2] = str_replace('ua][form_fastorder class="" title="" text=""]', '', str_replace('ru][form_fastorder class="" title="" text=""]', '', $c[2]));
+                $xml_product['description'] = $this->rip_tags($c[1]);
+                if (isset($c[2])) {
+                    $xml_product['description_ua'] = $this->rip_tags($c[1]);
+                } else {
+                    $xml_product['description_ua'] = $xml_product['description_ru'];
+                }
+            } else {
+                $xml_product['description'] = '';
+                $xml_product['description_ua'] = '';
+            }
+            // Strip out Visual Composer short codes, including the Visual Composer Raw HTML
+            $xml_product['description'] = preg_replace('/\[vc_raw_html.*\[\/vc_raw_html\]/', '', $xml_product['description']);
+            $xml_product['description'] = preg_replace('/\[(.*?)\]/', ' ', $xml_product['description']);
+            $xml_product['description'] = str_replace("&#xa0;", "", $xml_product['description']);
+            $xml_product['description'] = str_replace("&nbsp;", "", $xml_product['description']);
+            $xml_product['description'] = trim($this->feedprom_utf8_for_xml($xml_product['description']));
+            $xml_product['description'] = '<![CDATA[' . $xml_product['description'] . ']]>';
+            // UA
+            $xml_product['description_ua'] = preg_replace('/\[vc_raw_html.*\[\/vc_raw_html\]/', '', $xml_product['description_ua']);
+            $xml_product['description_ua'] = preg_replace('/\[(.*?)\]/', ' ', $xml_product['description_ua']);
+            $xml_product['description_ua'] = str_replace("&#xa0;", "", $xml_product['description_ua']);
+            $xml_product['description_ua'] = str_replace("&nbsp;", "", $xml_product['description_ua']);
+            $xml_product['description_ua'] = trim($this->feedprom_utf8_for_xml($xml_product['description_ua']));
+            $xml_product['description_ua'] = '<![CDATA[' . $xml_product['description_ua'] . ']]>';
+
+            $xml_product['image_all'] = [];
+            $gallery_ids = $product->get_gallery_image_ids();
+            foreach ($gallery_ids as $gallery_key => $gallery_value) {
+                $xml_product["image_all"][] = wp_get_attachment_url($gallery_value);
+            }
+
+            $xml_product["params"] = [];
+            $single_attributes = $product->get_attributes();
+            foreach ($single_attributes as $attribute) {
+                $attr_name = strtolower($attribute->get_name());
+                $attr_value = $product->get_attribute($attr_name);
+                $xml_product["params"][$attr_name] = $attr_value;
+            }
+            if (isset($xml_product["params"]['pa_manufacturer'])) {
+                $xml_product["vendor"] = $xml_product["params"]['pa_manufacturer'];
+                $xml_product["param"]['Производитель'] = $xml_product["params"]['pa_manufacturer'];
+            }
+            if (isset($xml_product["params"]['pa_year-manufacture'])) {
+                $xml_product["param"]['Год выпуска'] = $xml_product["params"]['pa_year-manufacture'];
+            }
+            if (isset($xml_product["params"]['pa_body-type'])) {
+                $xml_product["param"]['Тип кузова'] = $xml_product["params"]['pa_body-type'];
+            }
+            if (isset($xml_product["params"]['pa_automat'])) {
+                $xml_product["param"]['Коробка'] = $xml_product["params"]['pa_automat'];
+            }
+            if (isset($xml_product["params"]['pa_engine-volume'])) {
+                $xml_product["param"]['Объем'] = $xml_product["params"]['pa_engine-volume'];
+            }
+            if (isset($xml_product["params"]['pa_oil'])) {
+                $xml_product["param"]['Топливо'] = $xml_product["params"]['pa_oil'];
+            }
+            if (isset($xml_product["params"]['pa_speed'])) {
+                $xml_product["param"]['Пробег'] = $xml_product["params"]['pa_speed'];
+            }
+            if (isset($xml_product["params"]['pa_drive'])) {
+                $xml_product["param"]['Привод'] = $xml_product["params"]['pa_drive'];
+            }
+            $xml_product['param']['VIN код'] = get_post_meta($xml_product['id'], '_car_wincode', true);
+            $stock_status = get_post_meta($xml_product['id'], '_stock_status', true);
+
+            if ($stock_status == 'instock') {
+                $xml_product['available'] = 'true';
+                $stock = 'In stock';
+            } elseif ($stock_status == 'outofstock') {
+            $xml_product['available'] = 'false';
+            $stock = 'Preorder';
+        } elseif ($stock_status == 'stocksold') {
+            $xml_product['available'] = 'false';
+            $stock = 'Sold';
+        } else {
+            $xml_product['available'] = 'true';
+            $stock = 'In stock';
+        }
+
+        $carcity = get_the_terms($xml_product['id'], "carcity");
+        if (isset($carcity) && isset($carcity[0]->name)) {
+            $xml_product["param"]['Город'] = $carcity[0]->name;
+        }
+
+        $xml_product["param"]['Статус'] = $stock;
+        $ready_stock = in_array($stock_status, $stock_array) ? true : false;
+        if ($ready_stock && $ready_category) {
+            $products[] = $xml_product;
+        }
+        endwhile;
+        wp_reset_query();
+        $file = $this->feedprom_create_xml_feed($products, $project_config, 'true');
+
+        unset($products);
+        return 'File generated';
+    }
+
+}
